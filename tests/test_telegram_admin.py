@@ -13,6 +13,9 @@ from app.jobs.autopost import create_draft, publish_draft
 from app.prompts import build_post_prompt, build_system_prompt
 from app.store import Store
 from app.telegram_admin import (
+    PROFILE_DISCOVERY_DENIED,
+    PUBLIC_LOOKUP_FAILED,
+    PUBLIC_POST_NOT_FOUND,
     SHARE_UNRESOLVED,
     TelegramAdmin,
     merge_idea,
@@ -24,6 +27,7 @@ from app.telegram_admin import (
     post_target_from_url,
     resolve_share_link,
 )
+from app.threads_api import ThreadsApiError, TokenInvalidError
 
 
 class StubLLM:
@@ -494,6 +498,54 @@ async def test_direct_post_link_does_not_resolve_a_share(
     admin = _admin(settings, tmp_store, StubLLM(), threads, FakeApi())
     await admin.handle_update(_message("/reply https://threads.com/@foo/post/AbC12 гостріше"))
     assert threads.lookups == [("foo", "AbC12")]
+
+
+class _LookupThreads(StubThreads):
+    def __init__(self, result: dict[str, Any] | None | Exception) -> None:
+        super().__init__()
+        self._result = result
+
+    async def find_public_post(self, username: str, shortcode: str) -> dict[str, Any] | None:
+        self.lookups.append((username, shortcode))
+        if isinstance(self._result, Exception):
+            raise self._result
+        return self._result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (
+            ThreadsApiError(403, 10, None, "Application does not have permission for this action"),
+            PROFILE_DISCOVERY_DENIED,
+        ),
+        (ThreadsApiError(None, None, None, "transport error: ConnectError"), PUBLIC_LOOKUP_FAILED),
+        (TokenInvalidError(401, 190, None, "Error validating access token"), PUBLIC_LOOKUP_FAILED),
+    ],
+)
+async def test_reply_lookup_errors_name_only_a_missing_discovery_permission(
+    settings: Settings, tmp_store: Store, error: Exception, expected: str
+) -> None:
+    api = FakeApi()
+    admin = _admin(settings, tmp_store, StubLLM(), _LookupThreads(error), api)
+    await admin.handle_update(_message("/reply https://threads.com/@kseniashaaa/post/DfkiUIXjRgK"))
+    assert await tmp_store.posts_by_status("draft") == []
+    send = next(payload for method, payload in api.calls if method == "sendMessage")
+    assert send["text"] == expected
+    assert "100" not in send["text"]
+
+
+@pytest.mark.asyncio
+async def test_reply_not_in_recent_posts_is_not_a_permission_error(
+    settings: Settings, tmp_store: Store
+) -> None:
+    api = FakeApi()
+    admin = _admin(settings, tmp_store, StubLLM(), _LookupThreads(None), api)
+    await admin.handle_update(_message("/reply https://threads.com/@kseniashaaa/post/DfkiUIXjRgK"))
+    assert await tmp_store.posts_by_status("draft") == []
+    send = next(payload for method, payload in api.calls if method == "sendMessage")
+    assert send["text"] == PUBLIC_POST_NOT_FOUND
 
 
 @pytest.mark.asyncio

@@ -251,6 +251,24 @@ REPLY_USAGE = "Надішли /reply і посилання на пост. Мож
 SHARE_UNRESOLVED = (
     "Не вдалося відкрити це посилання. Надішли пряме посилання на пост: threads.com/@ім'я/post/код."
 )
+PROFILE_DISCOVERY_DENIED = (
+    "Чужі пости зараз недоступні: у токена немає дозволу threads_profile_discovery."
+)
+PUBLIC_LOOKUP_FAILED = "Не вдалося перевірити пост у Threads. Спробуй ще раз."
+PUBLIC_POST_NOT_FOUND = "Не знайшов цей пост серед останніх публікацій профілю."
+
+
+def public_lookup_failure(exc: ThreadsApiError) -> str:
+    """Map a profile_posts failure to a reply that matches the actual error.
+
+    A missing threads_profile_discovery permission is HTTP 403 code 10. Other
+    failures (transport, an invalid token) are a different sentence, and a post
+    that is simply absent from the recent page is not an error at all.
+    """
+    message = exc.message.lower()
+    if "threads_profile_discovery" in message or (exc.code == 10 and "permission" in message):
+        return PROFILE_DISCOVERY_DENIED
+    return PUBLIC_LOOKUP_FAILED
 
 
 class TelegramAdmin:
@@ -406,15 +424,17 @@ class TelegramAdmin:
             return
         try:
             found = await self._threads.find_public_post(username, shortcode)
-        except ThreadsApiError:
-            logger.warning("public post lookup failed @%s", username)
-            await self._send(
-                chat,
-                "Не бачу цей пост. Потрібен публічний профіль від 100 підписників і дозвіл threads_profile_discovery в Meta.",
+        except ThreadsApiError as exc:
+            logger.warning(
+                "public post lookup failed @%s status=%s code=%s",
+                username,
+                exc.status_code,
+                exc.code,
             )
+            await self._send(chat, public_lookup_failure(exc))
             return
         if not found or not found.get("id"):
-            await self._send(chat, "Не знайшов цей пост серед останніх публікацій профілю.")
+            await self._send(chat, PUBLIC_POST_NOT_FOUND)
             return
         await self._close_drafts("superseded", "замінено новою пачкою")
         avoid: list[str] = []
