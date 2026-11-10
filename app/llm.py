@@ -84,7 +84,11 @@ class GeminiProvider(LLMProvider):
     def __init__(self, settings: Settings) -> None:
         from google import genai  # lazy import: only needed when LLM_PROVIDER=gemini
 
-        self._client = genai.Client(api_key=settings.llm_api_key)
+        # system_instruction is rejected on v1 ("Developer instruction is not enabled").
+        self._client = genai.Client(
+            api_key=settings.llm_api_key,
+            http_options={"api_version": "v1beta"},
+        )
         self._model_post = settings.llm_model_post
         self._model_classify = settings.llm_model_classify
 
