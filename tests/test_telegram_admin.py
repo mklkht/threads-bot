@@ -57,6 +57,24 @@ class StubThreads:
         self.reply_to.append(reply_to_id)
         return "c1"
 
+    async def search_popular_posts(self, query: str, limit: int = 25) -> list[dict[str, Any]]:
+        return [
+            {
+                "id": "555",
+                "text": "всі раптом стали експертами з життя",
+                "permalink": "https://www.threads.net/@ann/post/Zz",
+                "username": "ann",
+                "media_type": "TEXT_POST",
+            },
+            {
+                "id": "556",
+                "text": "черга в касу мовчить голосніше за людей",
+                "permalink": "https://www.threads.net/@ann/post/Zy",
+                "username": "ann",
+                "media_type": "TEXT_POST",
+            },
+        ]
+
     async def find_public_post(self, username: str, shortcode: str) -> dict[str, Any]:
         return {
             "id": "999",
@@ -126,6 +144,9 @@ def test_parse_reply_command() -> None:
     assert parse_reply_command("/post привіт") is None
     bare = parse_reply_command("/reply")
     assert bare is not None and bare.shortcode == ""
+    hinted = parse_reply_command("/reply сухіше")
+    assert hinted is not None and hinted.shortcode == "" and hinted.hint == "сухіше"
+    assert parse_callback("f:4") == ("f", 4)
 
 
 def test_parse_post_command_and_callback() -> None:
@@ -240,6 +261,23 @@ async def test_dry_run_publish_stays_off_threads(settings: Settings, tmp_store: 
     result = await publish_draft(tmp_store, threads, admin._settings, draft["id"])  # noqa: SLF001
     assert result.ok and result.detail == "dry_run"
     assert threads.published == []
+
+
+@pytest.mark.asyncio
+async def test_bare_reply_searches_a_popular_post(settings: Settings, tmp_store: Store) -> None:
+    api = FakeApi()
+    admin = _admin(settings, tmp_store, StubLLM(), StubThreads(), api)
+    await admin.handle_update(_message("/reply"))
+    draft = (await tmp_store.posts_by_status("draft"))[0]
+    assert draft["reply_to_threads_id"] in {"555", "556"}
+    send = next(payload for method, payload in api.calls if method == "sendMessage")
+    labels = [button["text"] for row in send["reply_markup"]["inline_keyboard"] for button in row]
+    assert "Інший пост" in labels
+    await admin.handle_update(_callback(f"f:{draft['id']}", message_id=int(draft["tg_message_id"])))
+    again = (await tmp_store.posts_by_status("draft"))[0]
+    assert again["id"] != draft["id"]
+    assert again["reply_to_threads_id"] in {"555", "556"}
+    assert again["reply_to_threads_id"] != draft["reply_to_threads_id"]
 
 
 @pytest.mark.asyncio
