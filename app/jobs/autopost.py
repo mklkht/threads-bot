@@ -19,6 +19,7 @@ logger = logging.getLogger("job.autopost")
 DEFAULT_QUOTA_TOTAL = 250
 QUOTA_SAFETY_MARGIN = 10
 POST_SOURCE = "persona"
+REPLY_SOURCE = "public_reply"
 
 
 @dataclass
@@ -90,6 +91,42 @@ async def create_draft(
     return DraftResult(post_id=post_id, text=text)
 
 
+async def create_reply_draft(
+    store: Store,
+    llm: LLMClient,
+    settings: Settings,
+    *,
+    target_text: str,
+    reply_to_id: str,
+    permalink: str | None,
+    hint: str | None = None,
+) -> DraftResult:
+    """Draft a public reply. Does not publish it."""
+    if is_paused(settings):
+        return DraftResult(error="бот на паузі, файл data/PAUSE")
+
+    text = await llm.generate_public_reply(target_text, hint)
+    ok, reason = filters.check_reply_text(text, settings.reply_max_chars)
+    if not ok:
+        logger.info("reply draft rejected (%s), retrying once", reason)
+        text = await llm.generate_public_reply(target_text, hint, feedback=filters.explain_rejection(reason or ""))
+        ok, reason = filters.check_reply_text(text, settings.reply_max_chars)
+    if not ok:
+        await store.create_post(text, None, REPLY_SOURCE, "failed")
+        return DraftResult(error=f"відповідь не пройшла перевірку: {filters.explain_rejection(reason or '')}")
+
+    post_id = await store.create_post(text, None, REPLY_SOURCE, "draft")
+    await store.update_post(
+        post_id,
+        idea=hint,
+        reply_to_threads_id=reply_to_id,
+        target_text=target_text,
+        target_permalink=permalink,
+    )
+    logger.info("reply draft created post_id=%s", post_id)
+    return DraftResult(post_id=post_id, text=text)
+
+
 async def publish_draft(store: Store, threads: ThreadsClient, settings: Settings, post_id: int) -> PublishResult:
     """Publish a draft. A second call after success does not publish again."""
     post = await store.get_post(post_id)
@@ -117,14 +154,19 @@ async def publish_draft(store: Store, threads: ThreadsClient, settings: Settings
 
     await store.update_post(post_id, status="publishing")
     try:
-        creation_id = await threads.create_container(user_id, post["text"])
+        creation_id = await threads.create_container(
+            user_id, post["text"], reply_to_id=post.get("reply_to_threads_id")
+        )
         await store.update_post(post_id, creation_id=creation_id)
         await threads.wait_until_finished(creation_id)
         threads_id = await threads.publish(user_id, creation_id)
     except Exception as exc:
         logger.exception("publish failed post_id=%s (%s)", post_id, type(exc).__name__)
         await store.update_post(post_id, status="draft", error=type(exc).__name__)
-        return PublishResult(False, "не вдалося опублікувати, спробуй ще раз")
+        detail = "не вдалося опублікувати, спробуй ще раз"
+        if "permission" in str(exc).lower() or "threads_keyword_search" in str(exc).lower():
+            detail = "Threads не дав відповісти на чужий пост. У додатку Meta потрібен дозвіл threads_keyword_search і новий токен."
+        return PublishResult(False, detail)
 
     await store.update_post(
         post_id,

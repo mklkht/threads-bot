@@ -17,7 +17,8 @@ CREATE TABLE IF NOT EXISTS posts (
   creation_id TEXT, threads_id TEXT UNIQUE, text TEXT NOT NULL,
   topic TEXT, source TEXT NOT NULL, status TEXT NOT NULL,
   error TEXT, created_at TEXT NOT NULL, published_at TEXT,
-  idea TEXT, tg_chat_id TEXT, tg_message_id TEXT
+  idea TEXT, tg_chat_id TEXT, tg_message_id TEXT,
+  reply_to_threads_id TEXT, target_text TEXT, target_permalink TEXT
 );
 CREATE TABLE IF NOT EXISTS replies (
   reply_id TEXT PRIMARY KEY, post_id TEXT NOT NULL, replied_to_id TEXT,
@@ -42,6 +43,9 @@ POST_COLUMNS = frozenset(
         "idea",
         "tg_chat_id",
         "tg_message_id",
+        "reply_to_threads_id",
+        "target_text",
+        "target_permalink",
     }
 )
 
@@ -185,7 +189,14 @@ class Store:
         async with self._conn.execute("PRAGMA table_info(posts)") as cur:
             rows = await cur.fetchall()
         have = {row["name"] for row in rows}
-        for name, decl in (("idea", "TEXT"), ("tg_chat_id", "TEXT"), ("tg_message_id", "TEXT")):
+        for name, decl in (
+            ("idea", "TEXT"),
+            ("tg_chat_id", "TEXT"),
+            ("tg_message_id", "TEXT"),
+            ("reply_to_threads_id", "TEXT"),
+            ("target_text", "TEXT"),
+            ("target_permalink", "TEXT"),
+        ):
             if name not in have:
                 await self._conn.execute(f"ALTER TABLE posts ADD COLUMN {name} {decl}")
 

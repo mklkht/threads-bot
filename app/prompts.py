@@ -79,6 +79,27 @@ def build_post_prompt(
     return "\n".join(lines)
 
 
+def build_reply_system_prompt(persona: str) -> str:
+    return f"""Ти пишеш одну відповідь під чужим постом у Threads. Персона:
+{persona}
+
+Це репліка в треді, не новий пост. Легкий сарказм до ситуації, не до автора. Без образ, без моралі, без порад і без прохання підписатись. 1–2 речення, до 200 символів. Жива мова, можна з малої літери. Без хештегів і посилань. Не згадуй, що ти ШІ."""
+
+
+def build_public_reply_prompt(target_text: str, hint: str | None = None, feedback: str | None = None) -> str:
+    lines = [
+        "Чужий пост:",
+        target_text.strip() or "(тексту немає)",
+        "Напиши одну гостру, але не злу відповідь. Можна іронію. Не переказуй пост і не пояснюй жарт.",
+    ]
+    if hint:
+        lines.append(f"Поправка автора, її врахуй: {hint}")
+    if feedback:
+        lines.append(f"Попередня версія не пройшла перевірку: {feedback}. Виправ це, тон не змінюй.")
+    lines.append("Відповідай лише текстом репліки, без лапок і пояснень.")
+    return "\n".join(lines)
+
+
 def build_classify_prompt(
     post_text: str,
     reply_text: str,

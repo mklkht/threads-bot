@@ -158,6 +158,25 @@ class ThreadsClient:
             params = {**params, "after": after}
         return items
 
+    async def find_public_post(self, username: str, shortcode: str) -> dict[str, Any] | None:
+        """Find a public post by username and the shortcode from its Threads URL."""
+        params: dict[str, Any] = {
+            "username": username,
+            "fields": "id,text,permalink,shortcode,username",
+            "limit": 50,
+        }
+        for _ in range(4):
+            data = await self._request("GET", "/profile_posts", params=params)
+            for item in data.get("data") or []:
+                permalink = str(item.get("permalink") or "")
+                if item.get("shortcode") == shortcode or f"/post/{shortcode}" in permalink:
+                    return dict(item)
+            after = ((data.get("paging") or {}).get("cursors") or {}).get("after")
+            if not after:
+                return None
+            params = {**params, "after": after}
+        return None
+
     async def create_container(self, user_id: str, text: str, reply_to_id: str | None = None) -> str:
         form: dict[str, Any] = {"media_type": "TEXT", "text": text}
         if reply_to_id:

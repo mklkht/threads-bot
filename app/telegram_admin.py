@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -15,10 +16,10 @@ from typing import Any
 import httpx
 
 from app.config import Settings
-from app.jobs.autopost import create_draft, publish_draft
+from app.jobs.autopost import create_draft, create_reply_draft, publish_draft
 from app.llm import LLMClient
 from app.store import Store
-from app.threads_api import ThreadsClient
+from app.threads_api import ThreadsApiError, ThreadsClient
 
 logger = logging.getLogger("telegram")
 
@@ -34,9 +35,21 @@ class TelegramApiError(Exception):
         self.status = status
 
 
+_THREAD_URL_RE = re.compile(
+    r"https?://(?:www\.)?threads\.(?:net|com)/@(?P<user>[A-Za-z0-9._]+)/post/(?P<code>[A-Za-z0-9_-]+)"
+)
+
+
 @dataclass(frozen=True)
 class PostCommand:
     idea: str | None
+
+
+@dataclass(frozen=True)
+class ReplyCommand:
+    username: str
+    shortcode: str
+    hint: str | None
 
 
 def parse_post_command(text: str) -> PostCommand | None:
@@ -50,6 +63,21 @@ def parse_post_command(text: str) -> PostCommand | None:
         return None
     idea = rest.strip()
     return PostCommand(idea=idea or None)
+
+
+def parse_reply_command(text: str) -> ReplyCommand | None:
+    """Return the Threads link target when text is /reply. None otherwise."""
+    stripped = text.strip()
+    if not stripped.startswith("/reply"):
+        return None
+    first, _, rest = stripped.partition(" ")
+    if first.split("@", 1)[0] != "/reply":
+        return None
+    match = _THREAD_URL_RE.search(rest)
+    if match is None:
+        return ReplyCommand(username="", shortcode="", hint=None)
+    hint = (rest[: match.start()] + rest[match.end() :]).strip()
+    return ReplyCommand(username=match.group("user"), shortcode=match.group("code"), hint=hint or None)
 
 
 def parse_callback(data: str) -> tuple[str, int] | None:
@@ -77,6 +105,14 @@ def draft_keyboard(post_id: int) -> dict[str, Any]:
     }
 
 
+def format_reply_message(text: str, target_text: str) -> str:
+    short = " ".join(target_text.split())
+    if len(short) > 140:
+        short = short[:137] + "..."
+    quoted = short or "(пост без тексту)"
+    return f"Відповідь\nна: {quoted}\n\n{text}"
+
+
 def format_draft_message(text: str, idea: str | None) -> str:
     head = "Чернетка"
     if idea:
@@ -91,9 +127,12 @@ HELP = (
     "Команди:\n"
     "/post — чернетка з теми\n"
     "/post ідея — чернетка з твоєї ідеї\n"
+    "/reply посилання — гостра відповідь під цим постом\n"
     "Відповідь на чернетку — новий варіант з цією правкою\n"
     "Кнопки: Опублікувати, Інший варіант, Ні"
 )
+
+REPLY_USAGE = "Надішли /reply і посилання на пост. Можна дописати, якою має бути відповідь."
 
 
 class TelegramAdmin:
@@ -163,6 +202,10 @@ class TelegramAdmin:
         if command is not None:
             await self._propose(idea=command.idea)
             return
+        reply_command = parse_reply_command(text)
+        if reply_command is not None:
+            await self._start_reply(reply_command)
+            return
         if text.startswith("/start") or text.startswith("/help"):
             await self._send(str(chat), HELP)
             return
@@ -170,10 +213,18 @@ class TelegramAdmin:
         if text.strip() and reply.get("message_id") is not None:
             post = await self._store.get_post_by_tg_message(str(chat), str(reply["message_id"]))
             if post is not None:
-                await self._propose(idea=merge_idea(post.get("idea"), text))
+                if post.get("reply_to_threads_id"):
+                    await self._offer_reply(
+                        reply_to_id=str(post["reply_to_threads_id"]),
+                        target_text=str(post.get("target_text") or ""),
+                        permalink=post.get("target_permalink"),
+                        hint=merge_idea(post.get("idea"), text),
+                    )
+                else:
+                    await self._propose(idea=merge_idea(post.get("idea"), text))
                 return
         if text.strip():
-            await self._send(str(chat), "Напиши /post або /post і твоя ідея. Відповідь на чернетку змінює її.")
+            await self._send(str(chat), "Напиши /post, /post і ідея, або /reply і посилання на пост.")
 
     async def _propose(self, *, idea: str | None, topic: str | None = None) -> None:
         chat = str(self._settings.alert_telegram_chat_id)
@@ -193,6 +244,67 @@ class TelegramAdmin:
         message_id = str(sent["message_id"])
         await self._store.update_post(result.post_id, tg_chat_id=chat, tg_message_id=message_id)
         logger.info("draft offered post_id=%s", result.post_id)
+
+    async def _start_reply(self, command: ReplyCommand) -> None:
+        chat = str(self._settings.alert_telegram_chat_id)
+        if not command.shortcode:
+            await self._send(chat, REPLY_USAGE)
+            return
+        try:
+            found = await self._threads.find_public_post(command.username, command.shortcode)
+        except ThreadsApiError:
+            logger.warning("public post lookup failed @%s", command.username)
+            await self._send(
+                chat,
+                "Не бачу цей пост. Потрібен публічний профіль від 100 підписників і дозвіл threads_profile_discovery в Meta.",
+            )
+            return
+        if not found or not found.get("id"):
+            await self._send(chat, "Не знайшов цей пост серед останніх публікацій профілю.")
+            return
+        await self._offer_reply(
+            reply_to_id=str(found["id"]),
+            target_text=str(found.get("text") or ""),
+            permalink=str(found.get("permalink") or ""),
+            hint=command.hint,
+        )
+
+    async def _offer_reply(
+        self,
+        *,
+        reply_to_id: str,
+        target_text: str,
+        permalink: str | None,
+        hint: str | None,
+    ) -> None:
+        chat = str(self._settings.alert_telegram_chat_id)
+        await self._close_drafts("superseded", "замінено новою чернеткою")
+        result = await create_reply_draft(
+            self._store,
+            self._llm,
+            self._settings,
+            target_text=target_text,
+            reply_to_id=reply_to_id,
+            permalink=permalink,
+            hint=hint,
+        )
+        if result.error or result.post_id is None or result.text is None:
+            await self._send(chat, result.error or "не вдалося зібрати відповідь")
+            return
+        sent = await self._api(
+            "sendMessage",
+            {
+                "chat_id": chat,
+                "text": format_reply_message(result.text, target_text),
+                "reply_markup": draft_keyboard(result.post_id),
+            },
+        )
+        await self._store.update_post(
+            result.post_id,
+            tg_chat_id=chat,
+            tg_message_id=str(sent["message_id"]),
+        )
+        logger.info("reply draft offered post_id=%s", result.post_id)
 
     async def _on_callback(self, query: dict[str, Any]) -> None:
         query_id = query["id"]
@@ -216,9 +328,17 @@ class TelegramAdmin:
             await self._answer(query_id, "відхилено")
             return
         if action == "r":
+            await self._answer(query_id, "роблю інший варіант")
+            if post.get("reply_to_threads_id"):
+                await self._offer_reply(
+                    reply_to_id=str(post["reply_to_threads_id"]),
+                    target_text=str(post.get("target_text") or ""),
+                    permalink=post.get("target_permalink"),
+                    hint=post.get("idea"),
+                )
+                return
             idea = post.get("idea")
             topic = None if idea else post.get("topic")
-            await self._answer(query_id, "роблю інший варіант")
             await self._propose(idea=idea, topic=topic)
             return
         await self._answer(query_id, "публікую")
@@ -273,7 +393,10 @@ class TelegramAdmin:
         try:
             await self._api(
                 "setMyCommands",
-                {"commands": [{"command": "post", "description": "Запропонувати пост"}]},
+                {"commands": [
+                    {"command": "post", "description": "Запропонувати пост"},
+                    {"command": "reply", "description": "Відповідь під постом"},
+                ]},
             )
         except TelegramApiError:
             logger.warning("telegram setMyCommands failed")

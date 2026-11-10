@@ -16,6 +16,7 @@ from app.telegram_admin import (
     merge_idea,
     parse_callback,
     parse_post_command,
+    parse_reply_command,
 )
 
 
@@ -34,16 +35,36 @@ class StubLLM:
         self.calls.append({"topic": topic, "idea": idea, "feedback": feedback, "recent": list(recent_posts)})
         return self.text
 
+    async def generate_public_reply(
+        self,
+        target_text: str,
+        hint: str | None = None,
+        feedback: str | None = None,
+    ) -> str:
+        self.calls.append({"target": target_text, "hint": hint, "feedback": feedback})
+        return "зона комфорту це диван, не стратегія"
+
 
 class StubThreads:
     def __init__(self) -> None:
         self.published: list[tuple[str, str]] = []
+        self.reply_to: list[str | None] = []
 
     async def get_publishing_limit(self, user_id: str) -> dict[str, Any]:
         return {"quota_usage": 0, "config": {"quota_total": 250}}
 
     async def create_container(self, user_id: str, text: str, reply_to_id: str | None = None) -> str:
+        self.reply_to.append(reply_to_id)
         return "c1"
+
+    async def find_public_post(self, username: str, shortcode: str) -> dict[str, Any]:
+        return {
+            "id": "999",
+            "text": "вийди із зони комфорту",
+            "permalink": f"https://www.threads.net/@{username}/post/{shortcode}",
+            "shortcode": shortcode,
+            "username": username,
+        }
 
     async def wait_until_finished(self, creation_id: str, timeout_sec: int = 60) -> None:
         return None
@@ -94,6 +115,17 @@ def _callback(data: str, chat: int = 99, message_id: int = 11) -> dict[str, Any]
             "message": {"message_id": message_id, "chat": {"id": chat}},
         },
     }
+
+
+def test_parse_reply_command() -> None:
+    parsed = parse_reply_command("/reply https://www.threads.net/@foo/post/AbC-12 зроби сухіше")
+    assert parsed is not None
+    assert parsed.username == "foo"
+    assert parsed.shortcode == "AbC-12"
+    assert parsed.hint == "зроби сухіше"
+    assert parse_reply_command("/post привіт") is None
+    bare = parse_reply_command("/reply")
+    assert bare is not None and bare.shortcode == ""
 
 
 def test_parse_post_command_and_callback() -> None:
@@ -208,6 +240,22 @@ async def test_dry_run_publish_stays_off_threads(settings: Settings, tmp_store: 
     result = await publish_draft(tmp_store, threads, admin._settings, draft["id"])  # noqa: SLF001
     assert result.ok and result.detail == "dry_run"
     assert threads.published == []
+
+
+@pytest.mark.asyncio
+async def test_reply_command_publishes_under_the_target_post(settings: Settings, tmp_store: Store) -> None:
+    api = FakeApi()
+    threads = StubThreads()
+    admin = _admin(settings, tmp_store, StubLLM(), threads, api, dry_run=False)
+    await tmp_store.set_config("user_id", "42")
+    await admin.handle_update(_message("/reply https://www.threads.com/@foo/post/AbC12 гостріше"))
+    draft = (await tmp_store.posts_by_status("draft"))[0]
+    assert draft["reply_to_threads_id"] == "999"
+    assert draft["target_text"] == "вийди із зони комфорту"
+    await admin.handle_update(_callback(f"p:{draft['id']}", message_id=int(draft["tg_message_id"])))
+    assert threads.reply_to == ["999"]
+    published = await tmp_store.get_post(draft["id"])
+    assert published is not None and published["status"] == "published"
 
 
 @pytest.mark.asyncio

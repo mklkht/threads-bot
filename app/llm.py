@@ -10,7 +10,13 @@ import anthropic
 from pydantic import BaseModel, Field, ValidationError
 
 from app.config import Settings
-from app.prompts import build_classify_prompt, build_post_prompt, build_system_prompt
+from app.prompts import (
+    build_classify_prompt,
+    build_post_prompt,
+    build_public_reply_prompt,
+    build_reply_system_prompt,
+    build_system_prompt,
+)
 
 logger = logging.getLogger("llm")
 
@@ -153,8 +159,19 @@ class LLMClient:
     """Facade used by jobs: builds prompts from persona and delegates to the provider."""
 
     def __init__(self, settings: Settings) -> None:
+        self._persona = settings.account_persona
         self._system = build_system_prompt(settings.account_persona)
         self._provider = build_provider(settings)
+
+    async def generate_public_reply(
+        self,
+        target_text: str,
+        hint: str | None = None,
+        feedback: str | None = None,
+    ) -> str:
+        system = build_reply_system_prompt(self._persona)
+        user = build_public_reply_prompt(target_text, hint, feedback)
+        return await self._provider.generate_post(system, user)
 
     async def generate_post(
         self,
