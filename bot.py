@@ -21,7 +21,7 @@ from app.config import Settings
 from app.jobs import data_dir
 from app.jobs.autopost import job_autopost
 from app.jobs.check_replies import job_check_replies
-from app.jobs.refresh_token import job_refresh_token
+from app.jobs.refresh_token import job_refresh_token, verify_account
 from app.llm import LLMClient
 from app.store import Store
 from app.threads_api import ThreadsClient
@@ -81,12 +81,8 @@ async def main() -> int:
         await threads.aclose()
         await store.close()
 
-    if await store.get_token_info() is None:
-        now = datetime.now(timezone.utc).isoformat()
-        await store.save_token(settings.threads_access_token, now, None)
-
     try:
-        me = await threads.get_me()
+        me = await verify_account(store, threads, settings.threads_access_token)
     except Exception as exc:
         log.critical("startup check failed: cannot read account (%s)", type(exc).__name__)
         await shutdown_resources()

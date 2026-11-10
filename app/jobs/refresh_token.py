@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
+from typing import Any, Protocol
 
 from app.alerts import AlertLevel, notify
 from app.config import Settings
@@ -14,6 +15,51 @@ logger = logging.getLogger("job.refresh_token")
 
 TOKEN_LIFETIME_DAYS = 60
 WARN_AFTER_DAYS = 50
+PLACEHOLDER_TOKENS = frozenset({"", "REPLACE_ME"})
+
+
+class AccountReader(Protocol):
+    async def get_me(self) -> dict[str, Any]: ...
+
+
+def _is_placeholder(token: str | None) -> bool:
+    return token is None or token.strip() in PLACEHOLDER_TOKENS
+
+
+async def bootstrap_token(store: Store, configured: str, *, force: bool = False) -> None:
+    """Store the operator-supplied token when the database has nothing usable.
+
+    A token already refreshed into the database is left in place. Pass force
+    after the API has rejected that stored token and `configured` is a different
+    real value.
+    """
+    if _is_placeholder(configured):
+        return
+    info = await store.get_token_info()
+    stored = None if info is None else str(info["access_token"])
+    if force or _is_placeholder(stored):
+        now = datetime.now(timezone.utc).isoformat()
+        await store.save_token(configured, now, None)
+
+
+async def verify_account(store: Store, threads: AccountReader, configured: str) -> dict[str, Any]:
+    """Confirm the Threads account, adopting `configured` when the stored token cannot.
+
+    Placeholder values such as REPLACE_ME are replaced before the first call.
+    If a previously stored token is rejected and settings hold a different token,
+    that token is saved and the call is retried once.
+    """
+    await bootstrap_token(store, configured)
+    try:
+        return await threads.get_me()
+    except TokenInvalidError:
+        info = await store.get_token_info()
+        stored = "" if info is None else str(info["access_token"])
+        if stored == configured or _is_placeholder(configured):
+            raise
+        logger.warning("stored access token was rejected; trying the token from settings")
+        await bootstrap_token(store, configured, force=True)
+        return await threads.get_me()
 
 
 async def job_refresh_token(store: Store, threads: ThreadsClient, settings: Settings) -> None:
