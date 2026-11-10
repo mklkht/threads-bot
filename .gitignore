@@ -1,0 +1,13 @@
+.env
+data/*.db
+data/*.db-wal
+data/*.db-shm
+data/heartbeat
+data/PAUSE
+!data/.gitkeep
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.DS_Store
+*.bundle
