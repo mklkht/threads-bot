@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field, ValidationError
 from app.config import Settings
 from app.prompts import (
     build_classify_prompt,
+    build_brainstorm_prompt,
     build_post_prompt,
     build_public_reply_prompt,
     build_reply_system_prompt,
@@ -174,14 +175,24 @@ class LLMClient:
         user = build_public_reply_prompt(target_text, hint, feedback, avoid)
         return await self._provider.generate_post(system, user)
 
+    async def brainstorm_angle(self, *, topic: str, raw: str | None, recent: list[str]) -> str:
+        """Pick one local nerve. The post itself is a later call."""
+        user = build_brainstorm_prompt(topic, raw, recent)
+        line = await self._provider.generate_post(
+            "Ти збираєш одну зачіпку для поста. Сам пост не пиши.",
+            user,
+        )
+        return " ".join(line.split())[:240]
+
     async def generate_post(
         self,
         topic: str,
         recent_posts: list[str],
         feedback: str | None = None,
         idea: str | None = None,
+        spark: str | None = None,
     ) -> str:
-        user = build_post_prompt(topic, recent_posts, feedback, idea=idea)
+        user = build_post_prompt(topic, recent_posts, feedback, idea=idea, spark=spark)
         return await self._provider.generate_post(self._system, user)
 
     async def classify_reply(

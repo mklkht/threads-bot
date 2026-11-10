@@ -78,6 +78,19 @@ def test_stopwords_fail_case_insensitive(word: str) -> None:
     assert not ok and reason is not None and reason.startswith("stopword:")
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "йобані колхозники знову міряють людей по машині",
+        "срані рагулі тримають статус на одній звичці",
+        "заїбали, блять, ці ввічливі сімейні вечері",
+    ],
+)
+def test_account_swearing_passes_the_filter(text: str) -> None:
+    ok, reason = check_post_text(text, max_chars=400)
+    assert ok and reason is None
+
+
 def test_reply_passes_when_clean() -> None:
     ok, reason = check_reply_text("дякую, а який у тебе досвід із цим?", max_chars=250)
     assert ok and reason is None

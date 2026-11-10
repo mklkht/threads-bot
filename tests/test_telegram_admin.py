@@ -10,7 +10,7 @@ import pytest
 
 from app.config import Settings
 from app.jobs.autopost import create_draft, publish_draft
-from app.prompts import build_post_prompt, build_system_prompt
+from app.prompts import build_brainstorm_prompt, build_post_prompt, build_system_prompt
 from app.store import Store
 from app.telegram_admin import (
     PROFILE_DISCOVERY_DENIED,
@@ -41,8 +41,11 @@ class StubLLM:
         recent_posts: list[str],
         feedback: str | None = None,
         idea: str | None = None,
+        spark: str | None = None,
     ) -> str:
-        self.calls.append({"topic": topic, "idea": idea, "feedback": feedback, "recent": list(recent_posts)})
+        self.calls.append(
+            {"topic": topic, "idea": idea, "feedback": feedback, "recent": list(recent_posts), "spark": spark}
+        )
         return self.text
 
     async def generate_public_reply(
@@ -187,6 +190,34 @@ def test_post_voice_is_a_recognition_not_a_sketch() -> None:
     assert "rss" not in lowered
     assert "стрічк" not in lowered
     assert "паливо" not in lowered
+
+
+def test_rough_register_is_allowed_but_not_required() -> None:
+    system = build_system_prompt("персона")
+    post = build_post_prompt("статус", [])
+    idea = build_post_prompt("статус", [], idea="спокійна думка")
+    brainstorm = build_brainstorm_prompt("статус", None, [])
+
+    for prompt in (system, post, brainstorm):
+        lowered = prompt.lower()
+        assert "сарказм" in lowered or "саркастич" in lowered
+        assert "не в кожному пості" in lowered
+        assert "на ім'я" in lowered
+
+    assert "йобані колхозники" in system
+    assert "срані рагулі" in system
+    assert "заїбали, блять" in system
+    assert "не обов'язковий" in system
+    assert "один із трьох-чотирьох" in post
+    assert "есе" in system
+    assert "моралі" in system
+    assert "хештеги" in system
+    assert "новини" in system
+    assert "ШІ" in system
+    assert "не есе" in post
+    assert "не новини" in post
+    assert "мат не додавай" in idea
+    assert "йобані" not in idea
 
 
 @pytest.mark.asyncio

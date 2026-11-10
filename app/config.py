@@ -27,6 +27,8 @@ class Settings(BaseSettings):
     # Persona and topics
     account_persona: str
     niche_topics: str
+    # Off in tests. config.env turns it on so a draft can borrow a foreign observation.
+    spark_fetch: bool = False
 
     # Autopost
     post_cron: str = "30 9,19 * * *"

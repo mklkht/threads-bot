@@ -11,6 +11,7 @@ from app import filters
 from app.config import Settings
 from app.jobs import is_paused
 from app.llm import LLMClient
+from app.sparks import fetch_spark
 from app.store import Store
 from app.threads_api import ThreadsClient
 
@@ -33,6 +34,34 @@ class DraftResult:
 class PublishResult:
     ok: bool
     detail: str
+
+
+async def _local_spark(
+    llm: LLMClient,
+    settings: Settings,
+    topic: str,
+    recent: list[str],
+    idea: str | None,
+) -> str | None:
+    """Brainstorm a local angle. A foreign title is only fuel, and only without the author's idea."""
+    if idea:
+        return None
+    raw = None
+    if settings.spark_fetch:
+        try:
+            raw = await fetch_spark()
+        except Exception:
+            logger.info("spark fetch failed")
+    brainstorm = getattr(llm, "brainstorm_angle", None)
+    if brainstorm is None:
+        return raw
+    try:
+        angle = await brainstorm(topic=topic, raw=raw, recent=recent)
+    except Exception:
+        logger.info("brainstorm failed")
+        return raw
+    cleaned = " ".join(str(angle or "").split())
+    return cleaned or raw
 
 
 def pick_topic(topics: list[str], used_recent_first: list[str]) -> str | None:
@@ -71,12 +100,13 @@ async def create_draft(
             return DraftResult(error="список тем порожній")
 
     recent = await store.get_avoid_texts(10)
-    text = await llm.generate_post(chosen or "", recent, idea=idea)
+    spark = await _local_spark(llm, settings, chosen or "", recent, idea)
+    text = await llm.generate_post(chosen or "", recent, idea=idea, spark=spark)
     ok, reason = filters.check_post_text(text, settings.post_max_chars)
     if not ok:
         logger.info("draft: first version rejected (%s), retrying once", reason)
         text = await llm.generate_post(
-            chosen or "", recent, feedback=filters.explain_rejection(reason), idea=idea
+            chosen or "", recent, feedback=filters.explain_rejection(reason), idea=idea, spark=spark
         )
         ok, reason = filters.check_post_text(text, settings.post_max_chars)
     if not ok:
