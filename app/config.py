@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     threads_api_base: str = "https://graph.threads.net/v1.0"
 
     # LLM
-    llm_provider: Literal["anthropic", "openai"] = "anthropic"
+    llm_provider: Literal["anthropic", "gemini", "openai"] = "anthropic"
     llm_api_key: str = ""
     llm_model_post: str
     llm_model_classify: str
@@ -56,8 +56,8 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _check_llm_key(self) -> "Settings":
-        if self.llm_provider == "anthropic" and not self.llm_api_key:
-            raise ValueError("LLM_API_KEY is required when LLM_PROVIDER=anthropic")
+        if self.llm_provider in ("anthropic", "gemini") and not self.llm_api_key:
+            raise ValueError(f"LLM_API_KEY is required when LLM_PROVIDER={self.llm_provider}")
         return self
 
     def niche_topics_list(self) -> list[str]:

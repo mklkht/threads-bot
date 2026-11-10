@@ -80,6 +80,43 @@ class AnthropicProvider(LLMProvider):
             return ReplyDecision(action="ignore", reason="invalid_llm_output")
 
 
+class GeminiProvider(LLMProvider):
+    def __init__(self, settings: Settings) -> None:
+        from google import genai  # lazy import: only needed when LLM_PROVIDER=gemini
+
+        self._client = genai.Client(api_key=settings.llm_api_key)
+        self._model_post = settings.llm_model_post
+        self._model_classify = settings.llm_model_classify
+
+    async def generate_post(self, system: str, user: str) -> str:
+        resp = await self._client.aio.models.generate_content(
+            model=self._model_post,
+            contents=user,
+            config={
+                "system_instruction": system,
+                "max_output_tokens": POST_MAX_TOKENS,
+            },
+        )
+        return (resp.text or "").strip()
+
+    async def classify_reply(self, system: str, user: str) -> ReplyDecision:
+        resp = await self._client.aio.models.generate_content(
+            model=self._model_classify,
+            contents=user,
+            config={
+                "system_instruction": system,
+                "max_output_tokens": CLASSIFY_MAX_TOKENS,
+                "response_mime_type": "application/json",
+                "response_schema": ReplyDecision,
+            },
+        )
+        try:
+            return ReplyDecision.model_validate_json(resp.text or "")
+        except (ValidationError, ValueError):
+            logger.warning("classify: gemini response failed validation")
+            return ReplyDecision(action="ignore", reason="invalid_llm_output")
+
+
 class OpenAIProvider(LLMProvider):
     """Placeholder. Structure is ready; implement when needed (LLM_PROVIDER=openai)."""
 
@@ -96,6 +133,8 @@ class OpenAIProvider(LLMProvider):
 def build_provider(settings: Settings) -> LLMProvider:
     if settings.llm_provider == "anthropic":
         return AnthropicProvider(settings)
+    if settings.llm_provider == "gemini":
+        return GeminiProvider(settings)
     if settings.llm_provider == "openai":
         return OpenAIProvider(settings)
     raise ValueError(f"Unknown LLM provider: {settings.llm_provider}")
