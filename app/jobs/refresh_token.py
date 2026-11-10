@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
@@ -15,6 +16,7 @@ logger = logging.getLogger("job.refresh_token")
 
 TOKEN_LIFETIME_DAYS = 60
 WARN_AFTER_DAYS = 50
+TOKEN_SOURCE_KEY = "token_source_sha"
 PLACEHOLDER_TOKENS = frozenset({"", "REPLACE_ME"})
 
 
@@ -26,20 +28,25 @@ def _is_placeholder(token: str | None) -> bool:
     return token is None or token.strip() in PLACEHOLDER_TOKENS
 
 
-async def bootstrap_token(store: Store, configured: str, *, force: bool = False) -> None:
-    """Store the operator-supplied token when the database has nothing usable.
+def _source_sha(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
 
-    A token already refreshed into the database is left in place. Pass force
-    after the API has rejected that stored token and `configured` is a different
-    real value.
+
+async def bootstrap_token(store: Store, configured: str, *, force: bool = False) -> None:
+    """Store the operator-supplied token when it is new or the database has nothing usable.
+
+    A token refreshed into the database stays there until `.env` changes.
+    Pass force after the API has rejected the stored token and `configured` is a different real value.
     """
     if _is_placeholder(configured):
         return
     info = await store.get_token_info()
     stored = None if info is None else str(info["access_token"])
-    if force or _is_placeholder(stored):
+    source = await store.get_config(TOKEN_SOURCE_KEY)
+    if force or _is_placeholder(stored) or source != _source_sha(configured):
         now = datetime.now(timezone.utc).isoformat()
         await store.save_token(configured, now, None)
+        await store.set_config(TOKEN_SOURCE_KEY, _source_sha(configured))
 
 
 async def verify_account(store: Store, threads: AccountReader, configured: str) -> dict[str, Any]:

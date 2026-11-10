@@ -28,12 +28,23 @@ class _FakeThreads:
 
 @pytest.mark.asyncio
 async def test_bootstrap_keeps_a_refreshed_token(tmp_store: Store) -> None:
+    await bootstrap_token(tmp_store, "from-env")
     await tmp_store.save_token("refreshed", "2026-01-01T00:00:00+00:00", "2026-03-01T00:00:00+00:00")
     await bootstrap_token(tmp_store, "from-env")
     info = await tmp_store.get_token_info()
     assert info is not None
     assert info["access_token"] == "refreshed"
     assert info["refreshed_at"] == "2026-01-01T00:00:00+00:00"
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_adopts_a_replaced_env_token(tmp_store: Store) -> None:
+    await bootstrap_token(tmp_store, "old-env")
+    await tmp_store.save_token("refreshed", "2026-01-01T00:00:00+00:00", "2026-03-01T00:00:00+00:00")
+    await bootstrap_token(tmp_store, "new-env")
+    info = await tmp_store.get_token_info()
+    assert info is not None
+    assert info["access_token"] == "new-env"
 
 
 @pytest.mark.asyncio
@@ -52,7 +63,8 @@ async def test_verify_replaces_placeholder_before_the_api_call(tmp_store: Store)
 
 @pytest.mark.asyncio
 async def test_verify_retries_with_settings_when_stored_token_is_rejected(tmp_store: Store) -> None:
-    await tmp_store.save_token("stale", "2026-01-01T00:00:00+00:00", None)
+    await bootstrap_token(tmp_store, "real-token")
+    await tmp_store.save_token("stale-refresh", "2026-01-01T00:00:00+00:00", None)
     threads = _FakeThreads(
         tmp_store,
         [
@@ -64,7 +76,7 @@ async def test_verify_retries_with_settings_when_stored_token_is_rejected(tmp_st
     me = await verify_account(tmp_store, threads, "real-token")
 
     assert me["id"] == "1"
-    assert threads.seen == ["stale", "real-token"]
+    assert threads.seen == ["stale-refresh", "real-token"]
     info = await tmp_store.get_token_info()
     assert info is not None
     assert info["access_token"] == "real-token"
