@@ -94,3 +94,39 @@ async def test_mark_failed_and_expire_stale_pending(tmp_store: Store) -> None:
         row = await cur.fetchone()
     assert row["status"] == "failed"
     assert row["reason"] == "boom"
+
+
+@pytest.mark.asyncio
+async def test_migrate_adds_draft_columns(tmp_path: Path) -> None:
+    import aiosqlite
+
+    db_path = tmp_path / "old.db"
+    async with aiosqlite.connect(db_path) as conn:
+        await conn.execute(
+            """CREATE TABLE posts (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              creation_id TEXT, threads_id TEXT UNIQUE, text TEXT NOT NULL,
+              topic TEXT, source TEXT NOT NULL, status TEXT NOT NULL,
+              error TEXT, created_at TEXT NOT NULL, published_at TEXT
+            )"""
+        )
+        await conn.execute(
+            "INSERT INTO posts (text, source, status, created_at) VALUES ('старий', 'persona', 'published', 't')"
+        )
+        await conn.commit()
+
+    store = Store(str(db_path))
+    await store.init()
+    try:
+        old = await store.get_post(1)
+        assert old is not None and old["text"] == "старий" and old["idea"] is None
+        post_id = await store.create_post("новий", None, "persona", "draft")
+        await store.update_post(post_id, idea="стендап", tg_chat_id="99", tg_message_id="7")
+        fresh = await store.get_post(post_id)
+        assert fresh is not None
+        assert fresh["idea"] == "стендап"
+        found = await store.get_post_by_tg_message("99", "7")
+        assert found is not None and found["id"] == post_id
+        assert await store.get_avoid_texts(10) == ["старий"]
+    finally:
+        await store.close()

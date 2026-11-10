@@ -34,10 +34,16 @@ def test_empty_text_fails() -> None:
     assert not ok and reason == "empty"
 
 
-@pytest.mark.parametrize("text", ["пост #dotnet", "#"])
+@pytest.mark.parametrize("text", ["пост #dotnet", "#лишехештег", "дивись #це"])
 def test_hashtag_fails(text: str) -> None:
     ok, reason = check_post_text(text, max_chars=400)
     assert not ok and reason == "hashtag"
+
+
+@pytest.mark.parametrize("text", ["знову C# здивував на рев'ю", "F# для скриптів теж беру"])
+def test_language_hash_is_not_a_hashtag(text: str) -> None:
+    ok, reason = check_post_text(text, max_chars=400)
+    assert ok and reason is None
 
 
 @pytest.mark.parametrize("text", ["дивись https://example.com", "http://x.y"])
@@ -53,7 +59,10 @@ def test_two_emoji_fail_one_passes() -> None:
     assert ok
 
 
-@pytest.mark.parametrize("word", ["Безумовно", "у сучасному світі", "ПІДСУМОВУЮЧИ", "варто зазначити", "таким чином"])
+@pytest.mark.parametrize(
+    "word",
+    ["Безумовно", "у сучасному світі", "ПІДСУМОВУЮЧИ", "варто зазначити", "таким чином", "Колись", "це кайф"],
+)
 def test_stopwords_fail_case_insensitive(word: str) -> None:
     ok, reason = check_post_text(f"Текст, де є {word} всередині.", max_chars=400)
     assert not ok and reason is not None and reason.startswith("stopword:")

@@ -16,7 +16,8 @@ CREATE TABLE IF NOT EXISTS posts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   creation_id TEXT, threads_id TEXT UNIQUE, text TEXT NOT NULL,
   topic TEXT, source TEXT NOT NULL, status TEXT NOT NULL,
-  error TEXT, created_at TEXT NOT NULL, published_at TEXT
+  error TEXT, created_at TEXT NOT NULL, published_at TEXT,
+  idea TEXT, tg_chat_id TEXT, tg_message_id TEXT
 );
 CREATE TABLE IF NOT EXISTS replies (
   reply_id TEXT PRIMARY KEY, post_id TEXT NOT NULL, replied_to_id TEXT,
@@ -28,7 +29,20 @@ CREATE INDEX IF NOT EXISTS idx_replies_post_user ON replies(post_id, username);
 """
 
 POST_COLUMNS = frozenset(
-    {"creation_id", "threads_id", "text", "topic", "source", "status", "error", "created_at", "published_at"}
+    {
+        "creation_id",
+        "threads_id",
+        "text",
+        "topic",
+        "source",
+        "status",
+        "error",
+        "created_at",
+        "published_at",
+        "idea",
+        "tg_chat_id",
+        "tg_message_id",
+    }
 )
 
 TOKEN_KEY = "threads_access_token"
@@ -52,6 +66,7 @@ class Store:
         await self._db.execute("PRAGMA journal_mode=WAL")
         await self._db.execute("PRAGMA busy_timeout=5000")
         await self._db.executescript(SCHEMA)
+        await self._ensure_post_columns()
         await self._db.commit()
 
     async def close(self) -> None:
@@ -134,6 +149,45 @@ class Store:
         ) as cur:
             rows = await cur.fetchall()
         return [r["topic"] for r in rows]
+
+    async def get_post(self, post_id: int) -> dict[str, Any] | None:
+        async with self._conn.execute("SELECT * FROM posts WHERE id = ?", (post_id,)) as cur:
+            row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def posts_by_status(self, status: str) -> list[dict[str, Any]]:
+        async with self._conn.execute(
+            "SELECT * FROM posts WHERE status = ? ORDER BY id", (status,)
+        ) as cur:
+            rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
+    async def get_post_by_tg_message(self, chat_id: str, message_id: str) -> dict[str, Any] | None:
+        async with self._conn.execute(
+            "SELECT * FROM posts WHERE tg_chat_id = ? AND tg_message_id = ? ORDER BY id DESC LIMIT 1",
+            (chat_id, str(message_id)),
+        ) as cur:
+            row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def get_avoid_texts(self, limit: int = 10) -> list[str]:
+        """Published and discarded drafts, newest first, so the next one does not repeat them."""
+        async with self._conn.execute(
+            "SELECT text FROM posts WHERE status IN ('published', 'rejected', 'superseded', 'failed') "
+            "ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [r["text"] for r in rows]
+
+    async def _ensure_post_columns(self) -> None:
+        """Add draft columns on databases created before Telegram approval existed."""
+        async with self._conn.execute("PRAGMA table_info(posts)") as cur:
+            rows = await cur.fetchall()
+        have = {row["name"] for row in rows}
+        for name, decl in (("idea", "TEXT"), ("tg_chat_id", "TEXT"), ("tg_message_id", "TEXT")):
+            if name not in have:
+                await self._conn.execute(f"ALTER TABLE posts ADD COLUMN {name} {decl}")
 
     # ---- replies ----
 

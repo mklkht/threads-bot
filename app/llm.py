@@ -101,6 +101,7 @@ class GeminiProvider(LLMProvider):
             config={
                 "system_instruction": system,
                 "max_output_tokens": POST_MAX_TOKENS,
+                "temperature": 1.15,
                 "thinking_config": GEMINI_THINKING_OFF,
             },
         )
@@ -155,8 +156,14 @@ class LLMClient:
         self._system = build_system_prompt(settings.account_persona)
         self._provider = build_provider(settings)
 
-    async def generate_post(self, topic: str, recent_posts: list[str], feedback: str | None = None) -> str:
-        user = build_post_prompt(topic, recent_posts, feedback)
+    async def generate_post(
+        self,
+        topic: str,
+        recent_posts: list[str],
+        feedback: str | None = None,
+        idea: str | None = None,
+    ) -> str:
+        user = build_post_prompt(topic, recent_posts, feedback, idea=idea)
         return await self._provider.generate_post(self._system, user)
 
     async def classify_reply(

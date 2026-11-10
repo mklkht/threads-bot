@@ -1,13 +1,13 @@
-"""Scheduled job: generate and publish one persona post."""
+"""Generate a draft and publish it only after an explicit approval."""
 
 from __future__ import annotations
 
 import logging
 import random
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from app import filters
-from app.alerts import AlertLevel, notify
 from app.config import Settings
 from app.jobs import is_paused
 from app.llm import LLMClient
@@ -19,6 +19,19 @@ logger = logging.getLogger("job.autopost")
 DEFAULT_QUOTA_TOTAL = 250
 QUOTA_SAFETY_MARGIN = 10
 POST_SOURCE = "persona"
+
+
+@dataclass
+class DraftResult:
+    post_id: int | None = None
+    text: str | None = None
+    error: str | None = None
+
+
+@dataclass
+class PublishResult:
+    ok: bool
+    detail: str
 
 
 def pick_topic(topics: list[str], used_recent_first: list[str]) -> str | None:
@@ -37,61 +50,87 @@ def pick_topic(topics: list[str], used_recent_first: list[str]) -> str | None:
     return topics[0]
 
 
-async def job_autopost(store: Store, threads: ThreadsClient, llm: LLMClient, settings: Settings) -> None:
+async def create_draft(
+    store: Store,
+    llm: LLMClient,
+    settings: Settings,
+    *,
+    idea: str | None = None,
+    topic: str | None = None,
+) -> DraftResult:
+    """Generate one draft and store it. Does not call the Threads publish API."""
     if is_paused(settings):
-        logger.info("autopost skipped: PAUSE file present")
-        return
+        logger.info("draft skipped: PAUSE file present")
+        return DraftResult(error="бот на паузі, файл data/PAUSE")
+
+    chosen = topic
+    if not idea and not chosen:
+        chosen = pick_topic(settings.niche_topics_list(), await store.get_used_topics(50))
+        if chosen is None:
+            return DraftResult(error="список тем порожній")
+
+    recent = await store.get_avoid_texts(10)
+    text = await llm.generate_post(chosen or "", recent, idea=idea)
+    ok, reason = filters.check_post_text(text, settings.post_max_chars)
+    if not ok:
+        logger.info("draft: first version rejected (%s), retrying once", reason)
+        text = await llm.generate_post(
+            chosen or "", recent, feedback=filters.explain_rejection(reason), idea=idea
+        )
+        ok, reason = filters.check_post_text(text, settings.post_max_chars)
+    if not ok:
+        await store.create_post(text, chosen, POST_SOURCE, "failed")
+        logger.info("draft failed filters (%s)", reason)
+        return DraftResult(error=f"чернетка не пройшла перевірку: {filters.explain_rejection(reason or '')}")
+
+    post_id = await store.create_post(text, chosen, POST_SOURCE, "draft")
+    if idea:
+        await store.update_post(post_id, idea=idea)
+    logger.info("draft created post_id=%s", post_id)
+    return DraftResult(post_id=post_id, text=text)
+
+
+async def publish_draft(store: Store, threads: ThreadsClient, settings: Settings, post_id: int) -> PublishResult:
+    """Publish a draft. A second call after success does not publish again."""
+    post = await store.get_post(post_id)
+    if post is None:
+        return PublishResult(False, "чернетка не знайдена")
+    if post["status"] != "draft":
+        return PublishResult(False, "ця чернетка вже закрита")
+    if is_paused(settings):
+        return PublishResult(False, "бот на паузі")
 
     user_id = await store.get_config("user_id")
     if not user_id:
-        await notify(settings, AlertLevel.CRITICAL, "autopost: user_id is unknown, skipping")
-        return
+        return PublishResult(False, "акаунт ще не підключений")
 
     limit = await threads.get_publishing_limit(user_id)
     usage = int(limit.get("quota_usage", 0) or 0)
     total = int((limit.get("config") or {}).get("quota_total", DEFAULT_QUOTA_TOTAL) or DEFAULT_QUOTA_TOTAL)
     if usage >= total - QUOTA_SAFETY_MARGIN:
-        await notify(settings, AlertLevel.WARNING, f"autopost skipped: publishing quota {usage}/{total}")
-        return
-
-    topics = settings.niche_topics_list()
-    topic = pick_topic(topics, await store.get_used_topics(50))
-    if topic is None:
-        await notify(settings, AlertLevel.WARNING, "autopost skipped: NICHE_TOPICS is empty")
-        return
-
-    recent = [p["text"] for p in await store.get_recent_posts(10)]
-    text = await llm.generate_post(topic, recent)
-    ok, reason = filters.check_post_text(text, settings.post_max_chars)
-    if not ok:
-        logger.info("autopost: first draft rejected (%s), retrying once", reason)
-        text = await llm.generate_post(topic, recent, feedback=f"перевірка не пройдена: {reason}")
-        ok, reason = filters.check_post_text(text, settings.post_max_chars)
-    if not ok:
-        post_id = await store.create_post(text, topic, POST_SOURCE, "failed")
-        await store.update_post(post_id, error=f"filter:{reason}")
-        await notify(settings, AlertLevel.WARNING, f"autopost failed filters ({reason}), topic={topic}")
-        return
-
-    post_id = await store.create_post(text, topic, POST_SOURCE, "generated")
+        return PublishResult(False, f"ліміт публікацій {usage}/{total}")
 
     if settings.dry_run:
         await store.update_post(post_id, status="dry_run")
-        logger.info("[DRY_RUN] would publish post topic=%s text=%r", topic, text)
-        return
+        logger.info("[DRY_RUN] would publish post_id=%s", post_id)
+        return PublishResult(True, "dry_run")
 
+    await store.update_post(post_id, status="publishing")
     try:
-        creation_id = await threads.create_container(user_id, text)
-        await store.update_post(post_id, creation_id=creation_id, status="container_created")
+        creation_id = await threads.create_container(user_id, post["text"])
+        await store.update_post(post_id, creation_id=creation_id)
         await threads.wait_until_finished(creation_id)
         threads_id = await threads.publish(user_id, creation_id)
-        await store.update_post(
-            post_id,
-            threads_id=threads_id,
-            status="published",
-            published_at=datetime.now(timezone.utc).isoformat(),
-        )
-        logger.info("autopost published post_id=%s threads_id=%s topic=%s", post_id, threads_id, topic)
     except Exception as exc:
-        await store.update_post(post_id, status="failed", error=str(exc)[:500])
-        await notify(settings, AlertLevel.CRITICAL, f"autopost publish failed (post_id={post_id}): {exc}")
+        logger.exception("publish failed post_id=%s (%s)", post_id, type(exc).__name__)
+        await store.update_post(post_id, status="draft", error=type(exc).__name__)
+        return PublishResult(False, "не вдалося опублікувати, спробуй ще раз")
+
+    await store.update_post(
+        post_id,
+        threads_id=threads_id,
+        status="published",
+        published_at=datetime.now(timezone.utc).isoformat(),
+    )
+    logger.info("published post_id=%s threads_id=%s", post_id, threads_id)
+    return PublishResult(True, "published")

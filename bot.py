@@ -20,11 +20,11 @@ from apscheduler.triggers.interval import IntervalTrigger
 from app.alerts import AlertLevel, notify
 from app.config import Settings
 from app.jobs import data_dir
-from app.jobs.autopost import job_autopost
 from app.jobs.check_replies import job_check_replies
 from app.jobs.refresh_token import job_refresh_token, verify_account
 from app.llm import LLMClient
 from app.store import Store
+from app.telegram_admin import TelegramAdmin
 from app.threads_api import ThreadsClient
 
 HEARTBEAT_INTERVAL_MIN = 5
@@ -116,20 +116,15 @@ async def main() -> int:
     await store.set_config("user_id", str(me["id"]))
     await store.set_config("username", str(me.get("username", "")))
     log.info("connected as @%s (id=%s), dry_run=%s", me.get("username"), me["id"], settings.dry_run)
-    await notify(settings, AlertLevel.INFO, f"bot started as @{me.get('username')}, dry_run={settings.dry_run}")
+    await notify(
+        settings,
+        AlertLevel.INFO,
+        f"bot started as @{me.get('username')}, dry_run={settings.dry_run}. новий пост: /post",
+    )
 
     await job_refresh_token(store, threads, settings)
 
     scheduler = AsyncIOScheduler(timezone=TZ_NAME)
-    scheduler.add_job(
-        _guarded("autopost", job_autopost, store, threads, llm, settings),
-        CronTrigger.from_crontab(settings.post_cron, timezone=TZ_NAME),
-        jitter=settings.post_jitter_sec,
-        misfire_grace_time=3600,
-        coalesce=True,
-        max_instances=1,
-        id="autopost",
-    )
     scheduler.add_job(
         _guarded("check_replies", job_check_replies, store, threads, llm, settings),
         IntervalTrigger(minutes=settings.replies_interval_min),
@@ -165,12 +160,19 @@ async def main() -> int:
         except NotImplementedError:  # pragma: no cover - Windows
             pass
 
+    admin = TelegramAdmin(store, threads, llm, settings)
+    poll = asyncio.create_task(admin.run(stop))
     scheduler.start()
-    log.info("scheduler started, post_cron=%r", settings.post_cron)
+    log.info("scheduler started, new posts via telegram /post")
     try:
         await stop.wait()
     finally:
         log.info("shutting down")
+        poll.cancel()
+        try:
+            await poll
+        except asyncio.CancelledError:
+            pass
         scheduler.shutdown(wait=True)
         await shutdown_resources()
     return 0
