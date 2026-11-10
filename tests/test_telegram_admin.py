@@ -115,6 +115,7 @@ def test_prompt_keeps_the_author_idea() -> None:
     prompt = build_post_prompt("C# та .NET", ["старий пост"], idea="рахунок Azure на 3 долари")
     assert "рахунок Azure на 3 долари" in prompt
     assert "старий пост" in prompt
+    assert "Не підміняй іншою темою" in prompt
 
 
 @pytest.mark.asyncio
