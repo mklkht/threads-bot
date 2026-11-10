@@ -17,6 +17,8 @@ logger = logging.getLogger("llm")
 DECIDE_TOOL_NAME = "decide"
 POST_MAX_TOKENS = 400
 CLASSIFY_MAX_TOKENS = 400
+# gemini-2.5 counts hidden thinking against max_output_tokens and cuts the post mid-sentence.
+GEMINI_THINKING_OFF = {"thinking_budget": 0}
 
 
 class ReplyDecision(BaseModel):
@@ -99,6 +101,7 @@ class GeminiProvider(LLMProvider):
             config={
                 "system_instruction": system,
                 "max_output_tokens": POST_MAX_TOKENS,
+                "thinking_config": GEMINI_THINKING_OFF,
             },
         )
         return (resp.text or "").strip()
@@ -110,6 +113,7 @@ class GeminiProvider(LLMProvider):
             config={
                 "system_instruction": system,
                 "max_output_tokens": CLASSIFY_MAX_TOKENS,
+                "thinking_config": GEMINI_THINKING_OFF,
                 "response_mime_type": "application/json",
                 "response_schema": ReplyDecision,
             },

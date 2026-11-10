@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import signal
 import sys
 from datetime import datetime, timezone
@@ -43,12 +44,37 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(payload, ensure_ascii=False)
 
 
+_ACCESS_TOKEN_RE = re.compile(r"(access_token=)[^&\s\"']+")
+
+
+def _redact_text(value: object) -> object:
+    if isinstance(value, str):
+        return _ACCESS_TOKEN_RE.sub(r"\1[redacted]", value)
+    return value
+
+
+class RedactSecretsFilter(logging.Filter):
+    """Strip Threads access tokens if a log line includes the request URL."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.msg = _redact_text(record.msg)
+        if isinstance(record.args, dict):
+            record.args = {key: _redact_text(val) for key, val in record.args.items()}
+        elif isinstance(record.args, tuple):
+            record.args = tuple(_redact_text(arg) for arg in record.args)
+        return True
+
+
 def configure_logging(level: str) -> None:
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(JsonFormatter())
+    handler.addFilter(RedactSecretsFilter())
     root = logging.getLogger()
     root.handlers = [handler]
     root.setLevel(level.upper())
+    # httpx logs the full URL at INFO, including access_token.
+    for name in ("httpx", "httpcore", "httpx2"):
+        logging.getLogger(name).setLevel(logging.WARNING)
 
 
 def _guarded(name: str, fn: Callable[..., Awaitable[None]], *args: Any) -> Callable[[], Awaitable[None]]:
