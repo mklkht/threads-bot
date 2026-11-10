@@ -184,15 +184,6 @@ class Store:
             rows = await cur.fetchall()
         return [r["text"] for r in rows]
 
-    async def recent_reply_target_ids(self, limit: int = 40) -> list[str]:
-        async with self._conn.execute(
-            "SELECT reply_to_threads_id FROM posts WHERE reply_to_threads_id IS NOT NULL "
-            "ORDER BY id DESC LIMIT ?",
-            (limit,),
-        ) as cur:
-            rows = await cur.fetchall()
-        return [r["reply_to_threads_id"] for r in rows]
-
     async def _ensure_post_columns(self) -> None:
         """Add draft columns on databases created before Telegram approval existed."""
         async with self._conn.execute("PRAGMA table_info(posts)") as cur:

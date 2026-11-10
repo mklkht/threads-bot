@@ -158,21 +158,6 @@ class ThreadsClient:
             params = {**params, "after": after}
         return items
 
-    async def search_popular_posts(self, query: str, limit: int = 25) -> list[dict[str, Any]]:
-        """Top public posts for a keyword. Without threads_keyword_search this is only our own posts."""
-        data = await self._request(
-            "GET",
-            "/keyword_search",
-            params={
-                "q": query,
-                "search_type": "TOP",
-                "search_mode": "KEYWORD",
-                "fields": "id,text,permalink,timestamp,username,media_type",
-                "limit": limit,
-            },
-        )
-        return [dict(item) for item in data.get("data") or []]
-
     async def find_public_post(self, username: str, shortcode: str) -> dict[str, Any] | None:
         """Find a public post by username and the shortcode from its Threads URL."""
         params: dict[str, Any] = {

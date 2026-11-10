@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import random
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -83,7 +82,7 @@ def parse_reply_command(text: str) -> ReplyCommand | None:
 
 def parse_callback(data: str) -> tuple[str, int] | None:
     action, _, raw_id = data.partition(":")
-    if action not in {"p", "r", "n", "f"} or not raw_id.isdigit():
+    if action not in {"p", "r", "n"} or not raw_id.isdigit():
         return None
     return action, int(raw_id)
 
@@ -94,35 +93,6 @@ def merge_idea(previous: str | None, note: str) -> str:
     if not previous or not previous.strip():
         return cleaned[:MAX_IDEA]
     return f"{previous.strip()}\nПравка: {cleaned}"[:MAX_IDEA]
-
-
-POPULAR_QUERIES = (
-    "сьогодні",
-    "люди",
-    "гроші",
-    "ранок",
-    "черга",
-    "ніхто",
-    "нарешті",
-    "чому",
-    "знову",
-    "просто",
-)
-
-
-def reply_keyboard(post_id: int) -> dict[str, Any]:
-    return {
-        "inline_keyboard": [
-            [
-                {"text": "Опублікувати", "callback_data": f"p:{post_id}"},
-                {"text": "Інша відповідь", "callback_data": f"r:{post_id}"},
-            ],
-            [
-                {"text": "Інший пост", "callback_data": f"f:{post_id}"},
-                {"text": "Ні", "callback_data": f"n:{post_id}"},
-            ],
-        ]
-    }
 
 
 def draft_keyboard(post_id: int) -> dict[str, Any]:
@@ -157,13 +127,12 @@ HELP = (
     "Команди:\n"
     "/post — чернетка з теми\n"
     "/post ідея — чернетка з твоєї ідеї\n"
-    "/reply — знайти хайповий пост і запропонувати відповідь\n"
-    "/reply посилання — відповідь під конкретним постом\n"
+    "/reply посилання — відповідь під цим постом\n"
     "Відповідь на чернетку — новий варіант з цією правкою\n"
     "Кнопки: Опублікувати, Інший варіант, Ні"
 )
 
-REPLY_USAGE = "Не знайшов пост. Спробуй /reply ще раз або надішли посилання."
+REPLY_USAGE = "Надішли /reply і посилання на пост. Можна дописати, якою має бути відповідь."
 
 
 class TelegramAdmin:
@@ -276,63 +245,10 @@ class TelegramAdmin:
         await self._store.update_post(result.post_id, tg_chat_id=chat, tg_message_id=message_id)
         logger.info("draft offered post_id=%s", result.post_id)
 
-    async def _find_and_offer(self, hint: str | None) -> None:
-        """Pick a top-ranked public post and draft a reply. Threads has no For You feed in the API."""
-        chat = str(self._settings.alert_telegram_chat_id)
-        seen = set(await self._store.recent_reply_target_ids(40))
-        our_name = (await self._store.get_config("username") or "").lower()
-        only_ours = False
-        queries = list(POPULAR_QUERIES)
-        random.shuffle(queries)
-        for query in queries[:3]:
-            try:
-                found = await self._threads.search_popular_posts(query)
-            except ThreadsApiError:
-                logger.warning("popular search failed")
-                await self._send(
-                    chat,
-                    "Пошук постів не відповів. У Meta потрібен дозвіл threads_keyword_search і новий токен.",
-                )
-                return
-            usable: list[dict[str, Any]] = []
-            own = 0
-            for item in found:
-                text = str(item.get("text") or "").strip()
-                media = str(item.get("media_type") or "").upper()
-                author = str(item.get("username") or "").lower()
-                post_id = str(item.get("id") or "")
-                if author and our_name and author == our_name:
-                    own += 1
-                    continue
-                if not post_id or post_id in seen or len(text) < 15:
-                    continue
-                if media and media not in {"TEXT", "TEXT_POST"}:
-                    continue
-                usable.append(item)
-            if found and own == len(found):
-                only_ours = True
-            if not usable:
-                continue
-            pick = random.choice(usable[:8])
-            await self._offer_reply(
-                reply_to_id=str(pick["id"]),
-                target_text=str(pick.get("text") or ""),
-                permalink=str(pick.get("permalink") or ""),
-                hint=hint,
-            )
-            return
-        if only_ours:
-            await self._send(
-                chat,
-                "Пошук бачить лише твої пости. У Meta потрібен дозвіл threads_keyword_search і новий токен.",
-            )
-            return
-        await self._send(chat, REPLY_USAGE)
-
     async def _start_reply(self, command: ReplyCommand) -> None:
         chat = str(self._settings.alert_telegram_chat_id)
         if not command.shortcode:
-            await self._find_and_offer(command.hint)
+            await self._send(chat, REPLY_USAGE)
             return
         try:
             found = await self._threads.find_public_post(command.username, command.shortcode)
@@ -380,7 +296,7 @@ class TelegramAdmin:
             {
                 "chat_id": chat,
                 "text": format_reply_message(result.text, target_text),
-                "reply_markup": reply_keyboard(result.post_id),
+                "reply_markup": draft_keyboard(result.post_id),
             },
         )
         await self._store.update_post(
@@ -410,10 +326,6 @@ class TelegramAdmin:
             await self._store.update_post(post_id, status="rejected")
             await self._edit(str(chat), str(message.get("message_id") or post.get("tg_message_id")), f"{post['text']}\n\nвідхилено")
             await self._answer(query_id, "відхилено")
-            return
-        if action == "f":
-            await self._answer(query_id, "шукаю інший пост")
-            await self._find_and_offer(post.get("idea"))
             return
         if action == "r":
             await self._answer(query_id, "роблю інший варіант")
@@ -483,7 +395,7 @@ class TelegramAdmin:
                 "setMyCommands",
                 {"commands": [
                     {"command": "post", "description": "Запропонувати пост"},
-                    {"command": "reply", "description": "Знайти пост і відповісти"},
+                    {"command": "reply", "description": "Відповідь під постом"},
                 ]},
             )
         except TelegramApiError:
