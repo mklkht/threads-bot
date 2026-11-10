@@ -100,16 +100,19 @@ async def create_reply_draft(
     reply_to_id: str,
     permalink: str | None,
     hint: str | None = None,
+    avoid: list[str] | None = None,
 ) -> DraftResult:
     """Draft a public reply. Does not publish it."""
     if is_paused(settings):
         return DraftResult(error="бот на паузі, файл data/PAUSE")
 
-    text = await llm.generate_public_reply(target_text, hint)
+    text = await llm.generate_public_reply(target_text, hint, avoid=avoid)
     ok, reason = filters.check_reply_text(text, settings.reply_max_chars)
     if not ok:
         logger.info("reply draft rejected (%s), retrying once", reason)
-        text = await llm.generate_public_reply(target_text, hint, feedback=filters.explain_rejection(reason or ""))
+        text = await llm.generate_public_reply(
+            target_text, hint, feedback=filters.explain_rejection(reason or ""), avoid=avoid
+        )
         ok, reason = filters.check_reply_text(text, settings.reply_max_chars)
     if not ok:
         await store.create_post(text, None, REPLY_SOURCE, "failed")

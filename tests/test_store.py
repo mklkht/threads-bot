@@ -128,6 +128,6 @@ async def test_migrate_adds_draft_columns(tmp_path: Path) -> None:
         assert fresh["idea"] == "стендап"
         found = await store.get_post_by_tg_message("99", "7")
         assert found is not None and found["id"] == post_id
-        assert await store.get_avoid_texts(10) == ["старий"]
+        assert await store.get_avoid_texts(10) == ["новий", "старий"]
     finally:
         await store.close()

@@ -168,9 +168,10 @@ class LLMClient:
         target_text: str,
         hint: str | None = None,
         feedback: str | None = None,
+        avoid: list[str] | None = None,
     ) -> str:
         system = build_reply_system_prompt(self._persona)
-        user = build_public_reply_prompt(target_text, hint, feedback)
+        user = build_public_reply_prompt(target_text, hint, feedback, avoid)
         return await self._provider.generate_post(system, user)
 
     async def generate_post(

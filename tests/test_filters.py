@@ -61,7 +61,17 @@ def test_two_emoji_fail_one_passes() -> None:
 
 @pytest.mark.parametrize(
     "word",
-    ["Безумовно", "у сучасному світі", "ПІДСУМОВУЮЧИ", "варто зазначити", "таким чином", "Колись", "це кайф"],
+    [
+        "Безумовно",
+        "у сучасному світі",
+        "ПІДСУМОВУЮЧИ",
+        "варто зазначити",
+        "таким чином",
+        "Колись",
+        "це кайф",
+        "з одного боку",
+        "як мовна модель",
+    ],
 )
 def test_stopwords_fail_case_insensitive(word: str) -> None:
     ok, reason = check_post_text(f"Текст, де є {word} всередині.", max_chars=400)

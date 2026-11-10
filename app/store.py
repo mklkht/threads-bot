@@ -177,7 +177,7 @@ class Store:
     async def get_avoid_texts(self, limit: int = 10) -> list[str]:
         """Published and discarded drafts, newest first, so the next one does not repeat them."""
         async with self._conn.execute(
-            "SELECT text FROM posts WHERE status IN ('published', 'rejected', 'superseded', 'failed') "
+            "SELECT text FROM posts WHERE status IN ('published', 'rejected', 'superseded', 'failed', 'draft') "
             "ORDER BY id DESC LIMIT ?",
             (limit,),
         ) as cur:

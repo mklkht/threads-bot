@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import random
 import re
 import signal
 import sys
@@ -119,7 +120,7 @@ async def main() -> int:
     await notify(
         settings,
         AlertLevel.INFO,
-        f"bot started as @{me.get('username')}, dry_run={settings.dry_run}. новий пост: /post",
+        f"bot started as @{me.get('username')}, dry_run={settings.dry_run}. новий пост: /post. пачка: /pack",
     )
 
     await job_refresh_token(store, threads, settings)
@@ -161,6 +162,21 @@ async def main() -> int:
             pass
 
     admin = TelegramAdmin(store, threads, llm, settings)
+
+    async def _offer_daily_draft() -> None:
+        delay = random.randint(0, max(settings.post_jitter_sec, 0))
+        if delay:
+            await asyncio.sleep(delay)
+        await admin.offer_scheduled_draft()
+
+    scheduler.add_job(
+        _guarded("offer_draft", _offer_daily_draft),
+        CronTrigger.from_crontab(settings.post_cron, timezone=TZ_NAME),
+        misfire_grace_time=3600,
+        coalesce=True,
+        max_instances=1,
+        id="offer_draft",
+    )
     poll = asyncio.create_task(admin.run(stop))
     scheduler.start()
     log.info("scheduler started, new posts via telegram /post")
